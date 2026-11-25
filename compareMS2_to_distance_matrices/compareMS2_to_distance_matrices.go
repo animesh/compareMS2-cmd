@@ -10,9 +10,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,22 +54,72 @@ func (qc QCData) Average() float64 {
 // DistanceMatrix is a 2D map storing distance data between species pairs
 type DistanceMatrix map[int]map[int]DistanceData
 
+// FlexibleFloat decodes numeric JSON distances as well as string/null tokens
+// such as "INF" or "?" (mapped to math.NaN() for unavailable distances).
+type FlexibleFloat float64
+
+func parseDistanceToken(raw string) (float64, error) {
+	s := strings.TrimSpace(raw)
+	switch strings.ToLower(s) {
+	case "", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity", "nan", "?":
+		return math.NaN(), nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return math.NaN(), err
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return math.NaN(), nil
+	}
+	return v, nil
+}
+
+func (f *FlexibleFloat) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*f = FlexibleFloat(math.NaN())
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		v, err := parseDistanceToken(s)
+		if err != nil {
+			return err
+		}
+		*f = FlexibleFloat(v)
+		return nil
+	}
+	var num float64
+	if err := json.Unmarshal(trimmed, &num); err != nil {
+		return err
+	}
+	if math.IsNaN(num) || math.IsInf(num, 0) {
+		*f = FlexibleFloat(math.NaN())
+		return nil
+	}
+	*f = FlexibleFloat(num)
+	return nil
+}
+
 // ComparisonResult for JSON parsing
 type ComparisonResult struct {
-	DatasetA    string  `json:"datasetA"`
-	DatasetB    string  `json:"datasetB"`
-	SetDistance float64 `json:"setDistance"`
-	DatasetAQC  float64 `json:"datasetAQC"`
-	DatasetBQC  float64 `json:"datasetBQC"`
+	DatasetA    string        `json:"datasetA"`
+	DatasetB    string        `json:"datasetB"`
+	SetDistance FlexibleFloat `json:"setDistance"`
+	DatasetAQC  float64       `json:"datasetAQC"`
+	DatasetBQC  float64       `json:"datasetBQC"`
 }
 
 // DistanceMatrixOutput for JSON output
 type DistanceMatrixOutput struct {
 	DistanceMatrix struct {
-		Title     string      `json:"title"`
-		Cutoff    float64     `json:"cutoff"`
-		Species   []SpeciesQC `json:"species"`
-		Distances [][]float64 `json:"distances"`
+		Title     string       `json:"title"`
+		Cutoff    float64      `json:"cutoff"`
+		Species   []SpeciesQC  `json:"species"`
+		Distances [][]*float64 `json:"distances"`
 	} `json:"distanceMatrix"`
 }
 
@@ -205,6 +257,24 @@ func (s *Species) usedIndices() []int {
 	return indices
 }
 
+// lookupFiniteDistance returns the accumulated finite distance between species
+// indices a and b, or (0, false) if unavailable.
+func lookupFiniteDistance(distances DistanceMatrix, a, b int) (float64, bool) {
+	x, y := a, b
+	if a > b {
+		x, y = b, a
+	}
+	row := distances[x]
+	if row == nil {
+		return 0, false
+	}
+	d, ok := row[y]
+	if !ok || d.Samples == 0 || math.IsNaN(d.Value) || math.IsInf(d.Value, 0) {
+		return 0, false
+	}
+	return d.Value, true
+}
+
 // Create NEXUS format output
 func createNexus(outputStem string, distances DistanceMatrix, species *Species, metric int) error {
 	filename := outputStem + ".nexus"
@@ -254,10 +324,10 @@ func createNexus(outputStem string, distances DistanceMatrix, species *Species, 
 		for _, j := range used {
 			if i == j {
 				fmt.Fprintf(file, "%1.5f\t", 0.0)
-			} else if i < j {
-				fmt.Fprintf(file, "%1.5f\t", distances[i][j].Value)
+			} else if v, ok := lookupFiniteDistance(distances, i, j); ok {
+				fmt.Fprintf(file, "%1.5f\t", v)
 			} else {
-				fmt.Fprintf(file, "%1.5f\t", distances[j][i].Value)
+				fmt.Fprint(file, "?\t")
 			}
 		}
 		fmt.Fprintln(file, "")
@@ -301,7 +371,11 @@ func createMega(outputStem string, distances DistanceMatrix, species *Species, c
 	for ui := 1; ui < len(used); ui++ {
 		y := used[ui]
 		for ux := 0; ux < ui; ux++ {
-			fmt.Fprintf(file, "%1.5f\t", distances[used[ux]][y].Value)
+			if v, ok := lookupFiniteDistance(distances, used[ux], y); ok {
+				fmt.Fprintf(file, "%1.5f\t", v)
+			} else {
+				fmt.Fprint(file, "?\t")
+			}
 		}
 		fmt.Fprint(file, "\r\n")
 	}
@@ -371,7 +445,11 @@ func createMega12(outputStem string, distances DistanceMatrix, species *Species,
 		fmt.Fprintf(file, "[%d] ", yIdx+1)
 		for xIdx, x := range used {
 			if xIdx < yIdx {
-				fmt.Fprintf(file, "%9.5f ", distances[x][y].Value)
+				if v, ok := lookupFiniteDistance(distances, x, y); ok {
+					fmt.Fprintf(file, "%9.5f ", v)
+				} else {
+					fmt.Fprintf(file, "%9s ", "?")
+				}
 			} else if xIdx == yIdx {
 				fmt.Fprint(file, "          ")
 			}
@@ -411,9 +489,14 @@ func createJSON(outputStem string, distances DistanceMatrix, species *Species, c
 	// Build distance matrix (lower triangular)
 	for ui := 1; ui < len(used); ui++ {
 		y := used[ui]
-		row := make([]float64, 0, ui)
+		row := make([]*float64, 0, ui)
 		for ux := 0; ux < ui; ux++ {
-			row = append(row, distances[used[ux]][y].Value)
+			if v, ok := lookupFiniteDistance(distances, used[ux], y); ok {
+				val := v
+				row = append(row, &val)
+			} else {
+				row = append(row, nil)
+			}
 		}
 		output.DistanceMatrix.Distances = append(output.DistanceMatrix.Distances, row)
 	}
@@ -440,14 +523,16 @@ func updateDistanceAndQC(species *Species, distances DistanceMatrix, qcData map[
 		x, y = b, a
 	}
 
-	// Update distance
-	if distances[x] == nil {
-		distances[x] = make(map[int]DistanceData)
+	// Accumulate distance only when finite; unavailable pairs leave no finite entry
+	if !math.IsNaN(setDistance) && !math.IsInf(setDistance, 0) {
+		if distances[x] == nil {
+			distances[x] = make(map[int]DistanceData)
+		}
+		d := distances[x][y]
+		d.Value += setDistance
+		d.Samples++
+		distances[x][y] = d
 	}
-	d := distances[x][y]
-	d.Value += setDistance
-	d.Samples++
-	distances[x][y] = d
 
 	// Update QC for dataset A
 	qcDataA := qcData[a]
@@ -479,7 +564,7 @@ func parseComparisonJSON(filename string, compIdx int, species *Species, distanc
 	}
 
 	updateDistanceAndQC(species, distances, qcData,
-		result.DatasetA, result.DatasetB, result.SetDistance, result.DatasetAQC, result.DatasetBQC)
+		result.DatasetA, result.DatasetB, float64(result.SetDistance), result.DatasetAQC, result.DatasetBQC)
 
 	return nil
 }
@@ -516,7 +601,11 @@ func parseComparisonTxt(filename string, compIdx int, species *Species, distance
 		case "dataset_B":
 			result.DatasetB = value
 		case "set_distance":
-			result.SetDistance, _ = strconv.ParseFloat(value, 64)
+			parsed, err := parseDistanceToken(value)
+			if err != nil {
+				parsed = math.NaN()
+			}
+			result.SetDistance = FlexibleFloat(parsed)
 		case "dataset_A_QC":
 			result.DatasetAQC, _ = strconv.ParseFloat(value, 64)
 		case "dataset_B_QC":
@@ -531,7 +620,7 @@ func parseComparisonTxt(filename string, compIdx int, species *Species, distance
 	fmt.Printf("\nread pairwise comparison %d (%s and %s)", compIdx, result.DatasetA, result.DatasetB)
 
 	updateDistanceAndQC(species, distances, qcData,
-		result.DatasetA, result.DatasetB, result.SetDistance, result.DatasetAQC, result.DatasetBQC)
+		result.DatasetA, result.DatasetB, float64(result.SetDistance), result.DatasetAQC, result.DatasetBQC)
 
 	return nil
 }
