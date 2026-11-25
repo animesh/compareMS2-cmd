@@ -206,7 +206,7 @@ func TestWriteOutputs_EmptyDatasetNoNaN(t *testing.T) {
 			dsA := &Dataset{ID: 'A', Filename: "a.mgf", Spectra: make([]Spectrum, tc.aLen)}
 			dsB := &Dataset{ID: 'B', Filename: "b.mgf", Spectra: make([]Spectrum, tc.bLen)}
 
-			if err := WriteJSON(par, dsA, dsB, hist, nil, 0, 0, 0, 0); err != nil {
+			if err := WriteJSON(par, dsA, dsB, hist, nil, 0, 0, 0, 0, tc.aLen, tc.bLen); err != nil {
 				t.Fatalf("WriteJSON failed: %v", err)
 			}
 			if err := WriteTextOutput(par, dsA, dsB, hist, hist, 0, 0, 0, 0); err != nil {
@@ -281,7 +281,7 @@ func TestReadMGF_ExcludesOutOfRangeSpectra(t *testing.T) {
 		t.Fatalf("expected SpectrumCount=4 and 0 stored spectra, got %d / %d", ds.SpectrumCount, len(ds.Spectra))
 	}
 	hist := make([]int, dotprodHistogramBins)
-	if err := WriteJSON(par, ds, ds, hist, nil, 0, 0, 0, 0); err != nil {
+	if err := WriteJSON(par, ds, ds, hist, nil, 0, 0, 0, 0, 0, 0); err != nil {
 		t.Fatalf("WriteJSON failed: %v", err)
 	}
 	var parsed map[string]any
@@ -291,5 +291,74 @@ func TestReadMGF_ExcludesOutOfRangeSpectra(t *testing.T) {
 	}
 	if parsed["setDistance"] != "INF" {
 		t.Fatalf("expected setDistance == INF when all spectra excluded, got %v", parsed["setDistance"])
+	}
+}
+
+func TestWriteJSON_EligibleComparedCounts(t *testing.T) {
+	dir := t.TempDir()
+	// 4 spectra in file:
+	// scan 1: out of scan range (-W 2,10)
+	// scan 2: too few peaks (only 2 peaks, -I 20)
+	// scan 3: below basepeak threshold (500, -m 2000,0)
+	// scan 4: eligible (25 peaks, basepeak 5000, scan 4)
+	specsInRange := []testSpectrumSpec{
+		{scan: 1, rt: 10, pepMass: 500.25, startMz: 150, baseInten: 5000},
+		{scan: 3, rt: 30, pepMass: 600.25, startMz: 450, baseInten: 500},
+		{scan: 4, rt: 40, pepMass: 700.25, startMz: 750, baseInten: 5000},
+	}
+	mgfA := writeTestMGFFile(t, dir, "eligA.mgf", specsInRange, false)
+	// Append one low-peak spectrum (scan 2, 2 peaks) to eligA.mgf
+	f, err := os.OpenFile(mgfA, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed opening %s: %v", mgfA, err)
+	}
+	_, _ = f.WriteString("BEGIN IONS\nSCANS=2\nRTINSECONDS=20.0\nPEPMASS=550.25\n300.0 5000.0\n310.0 5000.0\nEND IONS\n")
+	f.Close()
+
+	// File B has 3 spectra: 1 out of range (scan 20), 2 eligible (scans 4, 5)
+	mgfB := writeTestMGFFile(t, dir, "eligB.mgf", []testSpectrumSpec{
+		{scan: 4, rt: 40, pepMass: 700.25, startMz: 750, baseInten: 5000},
+		{scan: 5, rt: 50, pepMass: 800.25, startMz: 1050, baseInten: 5000},
+		{scan: 20, rt: 200, pepMass: 900.25, startMz: 1350, baseInten: 5000},
+	}, false)
+
+	par := NewParameters()
+	par.StartScan = 2
+	par.EndScan = 10
+	par.MinPeaks = 20
+	par.MinBasepeakIntensity = 2000
+	par.JSONFilename = filepath.Join(dir, "elig.json")
+
+	dsA := &Dataset{ID: 'A', Filename: mgfA}
+	dsB := &Dataset{ID: 'B', Filename: mgfB}
+	if err := ReadMGF(par, dsA); err != nil {
+		t.Fatalf("ReadMGF A failed: %v", err)
+	}
+	if err := ReadMGF(par, dsB); err != nil {
+		t.Fatalf("ReadMGF B failed: %v", err)
+	}
+
+	hist := make([]int, dotprodHistogramBins)
+	var nComp, gt, sAB, sBA, cmpA, cmpB int
+	ComputeDotProdHistogram(par, dsA, dsB, hist, nil, &nComp, &gt, &sAB, &cmpA, true)
+	ComputeDotProdHistogram(par, dsB, dsA, hist, nil, &nComp, &gt, &sBA, &cmpB, false)
+
+	if err := WriteJSON(par, dsA, dsB, hist, nil, nComp, gt, sAB, sBA, cmpA, cmpB); err != nil {
+		t.Fatalf("WriteJSON failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(par.JSONFilename)
+	if err != nil {
+		t.Fatalf("read JSON failed: %v", err)
+	}
+	var out JSONOutput
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if out.DatasetAQC != 4 || out.DatasetBQC != 3 {
+		t.Fatalf("expected raw SpectrumCount QC 4/3, got %d/%d", out.DatasetAQC, out.DatasetBQC)
+	}
+	if out.DatasetACompared != 1 || out.DatasetBCompared != 2 {
+		t.Fatalf("expected filter-eligible compared counts 1/2, got %d/%d", out.DatasetACompared, out.DatasetBCompared)
 	}
 }

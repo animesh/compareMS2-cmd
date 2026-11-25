@@ -759,6 +759,8 @@ type JSONOutput struct {
 	MinTotalIonCurrent       float64                `json:"minTotalIonCurrent"`
 	DatasetAQC               int                    `json:"datasetAQC"`
 	DatasetBQC               int                    `json:"datasetBQC"`
+	DatasetACompared         int                    `json:"datasetACompared"`
+	DatasetBCompared         int                    `json:"datasetBCompared"`
 	NrGtCutoff               int                    `json:"nrGtCutoff"`
 	NrComparisons            int                    `json:"nrComparisons"`
 	MinPeaks                 int                    `json:"minPeaks"`
@@ -785,7 +787,7 @@ type MassDiffHistogramData struct {
 // WriteJSON writes results to JSON file
 func WriteJSON(par *Parameters, datasetA, datasetB *Dataset,
 	dotprodHistogram []int, massDiffDotProductHistogram [][]int,
-	nComparisons, greaterThanCutoff, sAB, sBA int) error {
+	nComparisons, greaterThanCutoff, sAB, sBA, datasetACompared, datasetBCompared int) error {
 
 	if par.JSONFilename == "" {
 		return nil
@@ -832,6 +834,8 @@ func WriteJSON(par *Parameters, datasetA, datasetB *Dataset,
 		NoiseThreshold:       par.Noise,
 		MinBasepeakIntensity: par.MinBasepeakIntensity,
 		MinTotalIonCurrent:   par.MinTotalIonCurrent,
+		DatasetACompared:     datasetACompared,
+		DatasetBCompared:     datasetBCompared,
 		NrGtCutoff:           greaterThanCutoff,
 		NrComparisons:        nComparisons,
 		MinPeaks:             par.MinPeaks,
@@ -1087,7 +1091,7 @@ func main() {
 	}
 
 	if err := WriteJSON(par, datasetA, datasetB, dotprodHistogram, massDiffDotProductHistogram,
-		nComparisons, greaterThanCutoff, sAB, sBA); err != nil {
+		nComparisons, greaterThanCutoff, sAB, sBA, datasetAActualCompared, datasetBActualCompared); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
