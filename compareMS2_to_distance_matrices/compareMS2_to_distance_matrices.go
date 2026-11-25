@@ -22,10 +22,11 @@ import (
 
 // Species contains all species data
 type Species struct {
-	name           []string       // species names indexed by species index
-	speciesHasData map[int]bool   // tracks which species have data
-	nameToIdx      map[string]int // species name -> index in name
-	sampleToIdx    map[string]int // sample name -> species index
+	name             []string       // species names indexed by species index
+	speciesHasData   map[int]bool   // tracks which species have data
+	nameToIdx        map[string]int // species name -> index in name
+	sampleToIdx      map[string]int // sample name -> species index
+	sampleLowerToIdx map[string]int // lowercased sample name -> species index
 }
 
 // DistanceData holds distance values and sample counts
@@ -92,21 +93,40 @@ func (s *Species) speciesNameToIdx(speciesName string) int {
 	return len(s.name) - 1
 }
 
+// sampleBaseName returns the filename segment for either POSIX or Windows paths.
+func sampleBaseName(name string) string {
+	idx := strings.LastIndexAny(name, `/\`)
+	if idx >= 0 {
+		return name[idx+1:]
+	}
+	return name
+}
+
 // Add a sample to a species
 func (s *Species) addSampleSpecies(sampleName, speciesName string) int {
 	idx := s.speciesNameToIdx(speciesName)
 	s.sampleToIdx[sampleName] = idx
+	if s.sampleLowerToIdx == nil {
+		s.sampleLowerToIdx = make(map[string]int)
+	}
+	s.sampleLowerToIdx[strings.ToLower(sampleName)] = idx
 	return idx
 }
 
 // Map sample name to species index
 func (s *Species) sampleNameToSpeciesIndex(sampleName string) int {
-	base := filepath.Base(sampleName)
+	base := sampleBaseName(sampleName)
 
-	// Check if sample already mapped
+	// Check exact basename first, then case-insensitive fallback
 	if idx, ok := s.sampleToIdx[base]; ok {
 		s.speciesHasData[idx] = true
 		return idx
+	}
+	if s.sampleLowerToIdx != nil {
+		if idx, ok := s.sampleLowerToIdx[strings.ToLower(base)]; ok {
+			s.speciesHasData[idx] = true
+			return idx
+		}
 	}
 
 	// Not found, create new species from sample name
@@ -118,28 +138,36 @@ func (s *Species) sampleNameToSpeciesIndex(sampleName string) int {
 
 // Read sample-to-species mapping file
 func readSampleToSpecies(filename string, species *Species) error {
-	file, err := os.Open(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("error opening sample-species mapping file %s: %v", filename, err)
 	}
-	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+	content := strings.TrimPrefix(string(data), "\uFEFF")
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
-		parts := strings.Split(line, "\t")
+		var parts []string
+		for _, field := range strings.Split(line, "\t") {
+			if trimmed := strings.TrimSpace(field); trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		}
 		if len(parts) >= 2 {
-			sampleName := strings.TrimSpace(parts[0])
-			speciesName := strings.TrimSpace(parts[1])
-			species.addSampleSpecies(sampleName, speciesName)
+			sampleName := sampleBaseName(parts[0])
+			speciesName := parts[1]
+			if sampleName != "" && speciesName != "" {
+				species.addSampleSpecies(sampleName, speciesName)
+			}
 		}
 	}
 
-	return scanner.Err()
+	return nil
 }
 
 // Read file list
@@ -574,10 +602,11 @@ func main() {
 	}
 
 	species := &Species{
-		name:           make([]string, 0),
-		speciesHasData: make(map[int]bool),
-		nameToIdx:      make(map[string]int),
-		sampleToIdx:    make(map[string]int),
+		name:             make([]string, 0),
+		speciesHasData:   make(map[int]bool),
+		nameToIdx:        make(map[string]int),
+		sampleToIdx:      make(map[string]int),
+		sampleLowerToIdx: make(map[string]int),
 	}
 
 	// Read sample-to-species mapping if provided
