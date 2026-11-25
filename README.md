@@ -146,6 +146,13 @@ goreleaser release --snapshot --clean
 ### 2.5 Testing & Reproducers (`testing-and-examples` branch)
 
 - **Sample-to-species edge-case unit tests (`compareMS2_to_distance_matrices/compareMS2_to_distance_matrices_test.go`):** `TestReadSampleToSpecies_EdgeCases` constructs a synthetic tab-separated mapping file covering a UTF-8 BOM (`\uFEFF`) on line 1, mixed CRLF/CR/LF line endings, trailing tabs, 3+ metadata columns, consecutive alignment tabs (`\t\t\t`), empty species fields (`empty_sp.mgf\t` falling back to sample stem), mixed POSIX (`/tmp/posix/...`) and Windows (`C:\data\nested\...`) path prefixes, case-insensitive lookup (`S6.MGF` -> `s6.mgf`), and exact-case precedence over lowercase fallback (`CaseExact.mgf` vs `caseexact.mgf`). Run `go test -v ./...` inside `compareMS2_to_distance_matrices/` and `compareMS2/` to reproduce.
+- **Two-pass Top-N & empty-dataset MGF reproducers (`examples/two_pass_edge_case/`):** Includes `tied_intensities.mgf`, `boundary_tie.mgf`, `blank_lines.mgf`, and usage instructions in `examples/two_pass_edge_case/README.md` to reproduce tied-intensity selection, blank-line handling in `PreCheckMGF`, and `"INF"` output under `-d 2` when `-N 0` selects zero spectra:
+  ```bash
+  ./compareMS2 -A examples/two_pass_edge_case/tied_intensities.mgf -B examples/two_pass_edge_case/tied_intensities.mgf -two-pass -N 2 -J /tmp/tied_n2.json
+  ./compareMS2 -A examples/two_pass_edge_case/boundary_tie.mgf -B examples/two_pass_edge_case/boundary_tie.mgf -two-pass -N 2 -J /tmp/boundary_n2.json
+  ./compareMS2 -A examples/two_pass_edge_case/blank_lines.mgf -B examples/two_pass_edge_case/blank_lines.mgf -two-pass -N 2 -J /tmp/blank_n2.json
+  ./compareMS2 -A examples/two_pass_edge_case/tied_intensities.mgf -B examples/two_pass_edge_case/tied_intensities.mgf -two-pass -N 0 -d 2 -J /tmp/tied_n0.json
+  ```
 
 ## 3. Using compareMS2
 
