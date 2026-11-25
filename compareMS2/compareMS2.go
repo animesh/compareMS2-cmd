@@ -376,8 +376,9 @@ func PreCheckMGF(par *Parameters, dataset *Dataset) error {
 				}
 			}
 		} else if strings.HasPrefix(line, "END") {
-
-			intensities = append(intensities, SumIntensity)
+			if specStatus != NOT_IN_RANGE {
+				intensities = append(intensities, SumIntensity)
+			}
 			SumIntensity = 0.0
 		}
 	}
@@ -422,6 +423,9 @@ func StoreTopNSpectrum(par *Parameters, dataset *Dataset, spec Spectrum, peaks [
 		}
 	} else {
 		// if TopN filtering is enabled, keep track of the topN intensities and only store spectra that are in the topN
+		if par.TopN == 0 {
+			return
+		}
 		if par.TopN > -1 {
 			if len(dataset.Spectra) < par.TopN { // if we haven't reached topN spectra yet, just add the spectrum
 				// Pre-process spectrum.
@@ -563,7 +567,9 @@ func ReadMGF(par *Parameters, dataset *Dataset) error {
 				spec.Charge = charge
 			}
 		} else if strings.HasPrefix(line, "END") {
-			StoreTopNSpectrum(par, dataset, spec, peaks, nPeaks, &minIdx)
+			if specStatus != NOT_IN_RANGE {
+				StoreTopNSpectrum(par, dataset, spec, peaks, nPeaks, &minIdx)
+			}
 			// Start a new spectrum
 			spec = Spectrum{}
 			// Clear peaks, but keep the underlying array to avoid unnecessary allocations

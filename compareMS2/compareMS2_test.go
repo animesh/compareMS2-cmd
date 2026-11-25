@@ -235,3 +235,61 @@ func TestWriteOutputs_EmptyDatasetNoNaN(t *testing.T) {
 		})
 	}
 }
+
+func TestReadMGF_ExcludesOutOfRangeSpectra(t *testing.T) {
+	dir := t.TempDir()
+	specs := []testSpectrumSpec{
+		{scan: 1, rt: 10, pepMass: 500.25, startMz: 150, baseInten: 1000},
+		{scan: 5, rt: 50, pepMass: 600.25, startMz: 450, baseInten: 5000},
+		{scan: 10, rt: 100, pepMass: 700.25, startMz: 750, baseInten: 3000},
+		{scan: 15, rt: 150, pepMass: 800.25, startMz: 1050, baseInten: 2000},
+	}
+	mgfPath := writeTestMGFFile(t, dir, "range.mgf", specs, false)
+
+	// Scan range [4, 12] + RT range [40, 120] keeps only scans 5 and 10, while SpectrumCount remains 4
+	for _, twoPass := range []bool{false, true} {
+		par := NewParameters()
+		par.TwoPass = twoPass
+		par.TopN = 1
+		par.StartScan = 4
+		par.EndScan = 12
+		par.StartRT = 40
+		par.EndRT = 120
+		ds := &Dataset{ID: 'A', Filename: mgfPath}
+		if err := ReadMGF(par, ds); err != nil {
+			t.Fatalf("ReadMGF(twoPass=%v) failed: %v", twoPass, err)
+		}
+		if ds.SpectrumCount != 4 {
+			t.Fatalf("twoPass=%v expected total SpectrumCount=4, got %d", twoPass, ds.SpectrumCount)
+		}
+		if len(ds.Spectra) != 1 || ds.Spectra[0].Scan != 5 {
+			t.Fatalf("twoPass=%v expected only highest in-range scan [5], got %+v", twoPass, ds.Spectra)
+		}
+	}
+
+	// Range excluding all spectra leaves len(Spectra)==0 so metric 2 emits INF
+	par := NewParameters()
+	par.Metric = 2
+	par.StartScan = 100
+	par.EndScan = 200
+	par.JSONFilename = filepath.Join(dir, "excluded.json")
+	ds := &Dataset{ID: 'A', Filename: mgfPath}
+	if err := ReadMGF(par, ds); err != nil {
+		t.Fatalf("ReadMGF(all excluded) failed: %v", err)
+	}
+	if ds.SpectrumCount != 4 || len(ds.Spectra) != 0 {
+		t.Fatalf("expected SpectrumCount=4 and 0 stored spectra, got %d / %d", ds.SpectrumCount, len(ds.Spectra))
+	}
+	hist := make([]int, dotprodHistogramBins)
+	if err := WriteJSON(par, ds, ds, hist, nil, 0, 0, 0, 0); err != nil {
+		t.Fatalf("WriteJSON failed: %v", err)
+	}
+	var parsed map[string]any
+	raw, _ := os.ReadFile(par.JSONFilename)
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if parsed["setDistance"] != "INF" {
+		t.Fatalf("expected setDistance == INF when all spectra excluded, got %v", parsed["setDistance"])
+	}
+}
