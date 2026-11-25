@@ -11,10 +11,11 @@ import (
 
 func newTestSpecies() *Species {
 	return &Species{
-		name:           make([]string, 0),
-		speciesHasData: make(map[int]bool),
-		nameToIdx:      make(map[string]int),
-		sampleToIdx:    make(map[string]int),
+		name:             make([]string, 0),
+		speciesHasData:   make(map[int]bool),
+		nameToIdx:        make(map[string]int),
+		sampleToIdx:      make(map[string]int),
+		sampleLowerToIdx: make(map[string]int),
 	}
 }
 
@@ -279,5 +280,58 @@ func TestParseUnavailableDistances_JSONAndTxt(t *testing.T) {
 	}
 	if _, ok := lookupFiniteDistance(distTxt, 0, 2); ok {
 		t.Fatalf("expected TXT INF distance to be unavailable")
+	}
+}
+
+func TestReadSampleToSpecies_EdgeCases(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "s2s_edge.txt")
+
+	// Cover UTF-8 BOM, CRLF + CR line endings, trailing tabs, 3+ columns,
+	// consecutive alignment tabs, empty species col, Windows/POSIX path prefixes,
+	// case-insensitive fallback, and exact-case precedence.
+	content := "\uFEFF" +
+		"s1.mgf\tGadus morhua\t\r\n" +
+		"s2.mgf\tSalmo salar\tmuscle rep\textra\r" +
+		"s3.mgf\t\t\tClupea harengus\n" +
+		"empty_sp.mgf\t\n" +
+		`C:\data\nested\s4.mgf` + "\tScomber scombrus\n" +
+		"/tmp/posix/s5.mgf\tPleuronectes platessa\n" +
+		"s6.mgf\tLimanda limanda\n" +
+		"CaseExact.mgf\tExact Species\n" +
+		"caseexact.mgf\tLower Species\n"
+
+	if err := os.WriteFile(mapPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed writing mapping file: %v", err)
+	}
+
+	species := newTestSpecies()
+	if err := readSampleToSpecies(mapPath, species); err != nil {
+		t.Fatalf("readSampleToSpecies failed: %v", err)
+	}
+
+	checks := []struct {
+		query string
+		want  string
+	}{
+		{"/runs/s1.mgf", "Gadus morhua"},
+		{"/runs/s2.mgf", "Salmo salar"},
+		{"/runs/s3.mgf", "Clupea harengus"},
+		{"/runs/empty_sp.mgf", "empty_sp"},
+		{"/runs/s4.mgf", "Scomber scombrus"},
+		{`L:\runs\s5.mgf`, "Pleuronectes platessa"},
+		{"/runs/S6.MGF", "Limanda limanda"},
+		{"/runs/CaseExact.mgf", "Exact Species"},
+		{"/runs/caseexact.mgf", "Lower Species"},
+		{"/runs/CASEEXACT.MGF", "Lower Species"},
+		{"/runs/unmapped.mgf", "unmapped"},
+	}
+
+	for _, tc := range checks {
+		idx := species.sampleNameToSpeciesIndex(tc.query)
+		got := species.name[idx]
+		if got != tc.want {
+			t.Errorf("sampleNameToSpeciesIndex(%q) -> %q, want %q", tc.query, got, tc.want)
+		}
 	}
 }

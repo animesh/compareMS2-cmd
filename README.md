@@ -12,6 +12,7 @@ A GUI for this software is available at [compareMS2](https://github.com/524D/com
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2.2 Running tests](#22-Running-tests)  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2.3 Release](#23-Release)  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2.4 Recent Changes](#24-Recent-Changes)  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2.5 Testing & Reproducers (`testing-and-examples` branch)](#25-Testing--Reproducers-testing-and-examples-branch)  
 [3. Using compareMS2](#3-Using-compareMS2)  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3.1 Configuring compareMS2](#31-Configuring-compareMS2)  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3.2 Calculating distance matrices](#32-Calculating-distance-matrices)  
@@ -141,6 +142,10 @@ goreleaser release --snapshot --clean
 - **Robust sample-to-species mapping (`compareMS2_to_distance_matrices`):** Hardened `readSampleToSpecies` and `sampleNameToSpeciesIndex` (`compareMS2_to_distance_matrices/compareMS2_to_distance_matrices.go`) by reading files with leading UTF-8 BOM (`\uFEFF`) removal and CRLF/CR/LF normalization, collapsing blank/consecutive tab fields per line (`len(parts) >= 2` non-empty trimmed tokens while guarding empty species names), extracting filenames across both POSIX (`/`) and Windows (`\`) paths via `sampleBaseName`, and storing a secondary `sampleLowerToIdx` map so lookups check exact basename first with case-insensitive fallback.
 - **Unavailable (`"INF"`) distance support (`compareMS2_to_distance_matrices`):** Added `FlexibleFloat` JSON decoding and `parseDistanceToken` for TXT/JSON results so `"INF"`/`"?"`/`null`/non-finite `setDistance` entries are recorded without aborting matrix generation; NEXUS (`-n`), MEGA (`-m`), and MEGA 12+ (`-m2`) emit `?` for unavailable pairs, and JSON (`-J`) emits `null` via `[][]*float64`.
 - **Unit test suites:** Added `compareMS2/compareMS2_test.go` and `compareMS2_to_distance_matrices/compareMS2_to_distance_matrices_test.go`.
+
+### 2.5 Testing & Reproducers (`testing-and-examples` branch)
+
+- **Sample-to-species edge-case unit tests (`compareMS2_to_distance_matrices/compareMS2_to_distance_matrices_test.go`):** `TestReadSampleToSpecies_EdgeCases` constructs a synthetic tab-separated mapping file covering a UTF-8 BOM (`\uFEFF`) on line 1, mixed CRLF/CR/LF line endings, trailing tabs, 3+ metadata columns, consecutive alignment tabs (`\t\t\t`), empty species fields (`empty_sp.mgf\t` falling back to sample stem), mixed POSIX (`/tmp/posix/...`) and Windows (`C:\data\nested\...`) path prefixes, case-insensitive lookup (`S6.MGF` -> `s6.mgf`), and exact-case precedence over lowercase fallback (`CaseExact.mgf` vs `caseexact.mgf`). Run `go test -v ./...` inside `compareMS2_to_distance_matrices/` and `compareMS2/` to reproduce.
 
 ## 3. Using compareMS2
 
